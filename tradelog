@@ -1,0 +1,378 @@
+#!/bin/bash
+# tradelog - PROJEKT 1 IOS FIT VUT
+# by Julia Mazakova 2021-03-22
+
+export POSIXLY_CORRECT=yes
+export LC_ALL=C
+
+help() {
+    echo "Welcome to tradelog help."
+    echo
+    echo "Usage: tradelog [-h|--help] [FILTR] [PŘÍKAZ] [LOG [LOG2 [...]]"
+    echo
+    echo "VALID COMMANDS: "
+    echo "list-tick  - list all tickers"
+    echo "profit     - show gross profit"
+    echo "pos        - list all current values of stock in descending order"
+    echo "last-price - show last known price for each ticker"
+    echo "hist-ord   - show histogram of transactions "
+    echo "graph-pos  - show graph of values of stock "
+    echo
+    echo "FILTER OPTIONS: "
+    echo "-a DATETIME    - return all records after DATETIME"
+    echo "-b DATETIME    - return all records before DATETIME"
+    echo "-t TICKER      - return records related to TICKER"
+    echo "-w WIDTH       - set width in output !value must be a positive number!"
+    echo "--help         - show this message"
+}
+
+listtick() {
+    for i in "$variable"; do
+        echo "$i" | cut -d';' -f 2-2 | sort -u
+    done
+
+}
+
+profit() {
+
+    for i in "$variable"; do
+        SELL=$(echo "$i" | grep "sell" | awk -F ';' '{sum += $4*$6} END {printf "%8.2f\n",sum}')
+        BUY=$(echo "$i" | grep "buy" | awk -F ';' '{sum += $4*$6} END {printf "%8.2f\n",sum}')
+        PROFIT="$(echo "$SELL -$BUY" | bc)"
+        if [ -z "$TICKER" ]; then
+            if [ $PROFIT == 0 ]; then
+                echo "0.00"
+            else
+                echo "$PROFIT"
+            fi
+        # if input is filtered by tickers sum all values in final to get final PROFIT (reference to line n.373)
+        else
+            final="$final $PROFIT"
+        fi
+    done
+}
+
+pos() {
+    max=0
+    TICK=$(listtick)
+    # for cycle just to get the max value
+    for i in $TICK; do
+        BUY=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="buy" {sum+=$6} END {print(sum)}')
+        SELL=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="sell" {sum +=$6} END {print(sum)}')
+        INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+        JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+        HOLD=$(echo "$BUY - $SELL" | bc)
+        POS=$(echo "$HOLD * $JC " | bc)
+        len=$(echo ${#POS})
+        if [ $len -gt $max ]; then
+            max=$len
+        fi
+    done
+    max=$(echo "$max + 1" | bc)
+
+    for i in $TICK; do
+        BUY=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="buy" {sum+=$6} END {print(sum)}')
+        SELL=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="sell" {sum +=$6} END {print(sum)}')
+        INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+        JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+        HOLD=$(echo "$BUY - $SELL" | bc)
+        POS=$(echo "$HOLD * $JC " | bc)
+        pos="$pos*$(printf "%-10s:%*.2f\n" $i $max $POS)"
+    done
+    # get rid of spaces and other unnecessary characters
+    pos="${pos# }"
+    pos="${pos//'*'/$'\n'}"
+    for l in "$pos"; do
+        echo "$l" | awk '$1!="" {print $0}' | sort -nrk3
+    done
+}
+lastprice() {
+    TICK=$(listtick)
+    max=0
+    # for cycle to get the max value
+    for i in $TICK; do
+        INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+        JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+        len=$(expr length $JC)
+        if [ $len -gt $max ]; then
+            max=$len
+        fi
+    done
+    max=$(echo "$max + 1" | bc)
+    for i in $TICK; do
+        INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+        JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+        printf "%-10s:%*.2f\n" $i $max $JC
+    done
+
+}
+
+histord() {
+    TICK=$(listtick)
+    # get the maximum
+    if [ -n "$WIDTH" ]; then
+        max=0
+        for i in $TICK; do
+            NUM=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum+=1} END {print(sum)}')
+            if [ $NUM -gt $max ]; then
+                max=$NUM
+            fi
+        done
+        # value of divisor
+        del=$(awk -v max="$max" -v width="$WIDTH" "BEGIN {print max/width}")
+    else
+    # default value of divisor
+        del=1
+    fi
+    for i in $TICK; do
+        NUM=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum+=1} END {print(sum)}')
+        NUM=$(echo "$NUM / $del" | bc)
+        SYMBOL=$(echo "$variable" | awk -v i="$NUM" 'BEGIN { OFS="#"; $i="#"; print }')
+        printf "%-10s: %s\n" $i $SYMBOL
+    done
+}
+
+graphpos() {
+    TICK=$(listtick)
+    if [ -n "$WIDTH" ]; then
+        max=0
+        # get the maximum and set the divisor
+        for i in $TICK; do
+            BUY=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="buy" {sum+=$6} END {print(sum)}')
+            SELL=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="sell" {sum +=$6} END {print(sum)}')
+            INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+            JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+            HOLD=$(echo "$BUY - $SELL" | bc)
+            POS=$(echo "$HOLD * $JC " | bc)
+            POSd=$(echo "$POS" | tr -d -)
+            if ((${POSd%%.*} > ${max%%.*})); then
+                max=$POSd
+            fi
+            del=$(echo "$max / $WIDTH " | bc)
+        done
+    else
+    # default value of divisor
+        del=1000
+    fi
+
+    for i in $TICK; do
+        zero=0
+        BUY=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="buy" {sum+=$6} END {print(sum)}')
+        SELL=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i && $3=="sell" {sum +=$6} END {print(sum)}')
+        INDEX=$(echo "$variable" | awk -F ';' -v i="$i" '$2==i {sum=NR} END {print(sum)}')
+        JC=$(echo "$variable" | awk -F ';' -v ind="$INDEX" 'NR==ind {print($4)}')
+        HOLD=$(echo "$BUY - $SELL" | bc)
+        POS=$(echo "($HOLD * $JC) / $del" | bc)
+        # if pos == 0
+        if ((${POS%%.*} == ${zero%%.*})); then
+            printf "%-10s:\n" $i
+        fi
+        # if pos < 0
+        if ((${POS%%.*} < ${zero%%.*})); then
+            POSd=$(echo "$POS" | tr -d -)
+            SYMBOL=$(awk -v i="$POSd" 'BEGIN { OFS="!"; $i="!"; print }')
+            printf "%-10s: %s\n" $i $SYMBOL
+        fi
+        # if pos > 0
+        if ((${POS%%.*} > ${zero%%.*})); then
+            SYMBOL=$(awk -v i="$POS" 'BEGIN { OFS="#"; $i="#"; print}')
+            printf "%-10s: %s\n" $i $SYMBOL
+        fi
+    done
+}
+# cycle through arguments
+while [ $# -gt 0 ]; do
+    key="$1"
+
+    case $key in
+    -t)
+        TICKER="$TICKER $2"
+        shift # past argument
+        shift # past value
+        ;;
+    -w)
+        if [ -z "$WIDTH" ]; then
+            WIDTH="$2"
+            shift # past argument
+            shift # past value
+        else
+            echo "Multiple width values are not possible!" 1>&2
+            exit 0
+        fi
+        ;;
+    -a)
+        AFTERDATE="$2"
+        shift # past argument
+        shift # past value
+        ;;
+    -b)
+        BEFOREDATE="$2"
+        shift # past argument
+        shift # past value
+        ;;
+    -h | --help) 
+        help
+        exit 0 # terminate program
+        shift # past argument
+        ;;
+    list-tick)
+        FUNC="listtick"
+        shift # past argument
+        ;;
+    profit)
+        FUNC="profit"
+        shift # past argument
+        ;;
+    pos)
+        FUNC="pos"
+        shift # past argument
+        ;;
+    last-price)
+        FUNC="lastprice"
+        shift # past argument
+        ;;
+    hist-ord)
+        FUNC="histord"
+        shift # past argument
+        ;;
+    graph-pos)
+        FUNC="graphpos"
+        shift # past argument
+        ;;
+    *)
+        if [ "${1##*.}" = "gz" ]; then
+            GZIPFILE="$GZIPFILE $1"
+        else
+            LOGFILE="$LOGFILE $1"
+        fi
+        shift # past argument
+        ;;
+    esac
+done
+# get rid of spaces
+TICKER="${TICKER# }"
+LOGFILE="${LOGFILE# }"
+GZIPFILE="${GZIPFILE# }"
+AFTERDATE="${AFTERDATE# }"
+
+# INPUT from stdin
+if [ -z "$LOGFILE" ] && [ -z "$GZIPFILE" ]; then
+    while IFS= read -r line; do
+        echo "$line" | awk '$0!=""' 
+    done <<< $INPUT
+fi
+
+# incorrect value of WIDTH
+zero=0
+if [[ $WIDTH -lt $zero ]]
+ then
+    echo " WIDTH cannot be negative !" 1>&2
+    exit 0
+fi
+
+if [ -n "$GZIPFILE" ]; then
+    INPUT=$(gzip -c -d $GZIPFILE | cat $LOGFILE -)
+else
+    INPUT=$(cat $LOGFILE)
+fi
+
+# -a
+if [ -n "$AFTERDATE" ] && [ -z "$BEFOREDATE" ] && [ -z "$TICKER" ]; then
+    if [ -z "$FUNC" ]; then
+        echo "$INPUT" | awk -F ';' -v i="$AFTERDATE" '$1>i'
+    else
+        variable=$(echo "$INPUT" | awk -F ';' -v i="$AFTERDATE" '$1>i')
+        $FUNC
+    fi
+fi
+
+# -a -t
+if [ -n "$AFTERDATE" ] && [ -n "$TICKER" ] && [ -z "$BEFOREDATE" ]; then
+    for i in $TICKER; do
+        if [ -z "$FUNC" ]; then
+            echo "$INPUT" | awk -F ';' -v i="$i" -v j="$AFTERDATE" '$2==i && $1>j'
+        else
+            variable=$(echo "$INPUT" | awk -F ';' -v i="$i" -v j="$AFTERDATE" '$2==i && $1>j')
+            $FUNC
+        fi
+    done
+fi
+
+# -b
+if [ -n "$BEFOREDATE" ] && [ -z "$AFTERDATE" ] && [ -z "$TICKER" ]; then
+    if [ -z "$FUNC" ]; then
+        echo "$INPUT" | awk -F ';' -v i="$BEFOREDATE" '$1<i'
+    else
+        variable=$(echo "$INPUT" | awk -F ';' -v i="$BEFOREDATE" '$1<i')
+        $FUNC
+    fi
+fi
+
+# -b -t
+if [ -n "$BEFOREDATE" ] && [ -n "$TICKER" ] && [ -z "$AFTERDATE" ]; then
+    for i in $TICKER; do
+        if [ -z "$FUNC" ]; then
+            echo "$INPUT" | awk -F ';' -v i="$i" -v j="$BEFOREDATE" '$2==i && $1<j'
+        else
+            variable=$(echo "$INPUT" | awk -F ';' -v i="$i" -v j="$BEFOREDATE" '$2==i && $1<j')
+            $FUNC
+        fi
+    done
+fi
+
+# -a -b
+if [ -n "$AFTERDATE" ] && [ -n "$BEFOREDATE" ] && [ -z "$TICKER" ]; then
+    if [ -z "$FUNC" ]; then
+        echo "$INPUT" | awk -F ';' -v i="$BEFOREDATE" -v j="$AFTERDATE" '$1<i && $1>j'
+    else
+        variable=$(echo "$INPUT" | awk -F ';' -v i="$BEFOREDATE" -v j="$AFTERDATE" '$1<i && $1>j')
+        $FUNC
+    fi
+fi
+
+# -a -b -t
+if [ -n "$BEFOREDATE" ] && [ -n "$TICKER" ] && [ -n "$AFTERDATE" ]; then
+    for i in $TICKER; do
+        if [ -z "$FUNC" ]; then
+            echo "$INPUT" | awk -F ';' -v i="$i" -v j="$BEFOREDATE" -v k="$AFTERDATE" '$2==i && $1<j && $1>k'
+        else
+            variable=$(echo "$INPUT" | awk -F ';' -v i="$i" -v j="$BEFOREDATE" -v k="$AFTERDATE" '$2==i && $1<j && $1>k')
+            $FUNC
+        fi
+    done
+fi
+
+# no filters
+if [ -z "$TICKER" ] && [ -z "$AFTERDATE" ] && [ -z "$BEFOREDATE" ]; then
+    if [ -z "$FUNC" ]; then
+        echo "$INPUT"
+    else
+        variable=$INPUT
+        $FUNC
+    fi
+fi
+
+# -t
+if [ -n "$TICKER" ] && [ -z "$AFTERDATE" ] && [ -z "$BEFOREDATE" ]; then
+    for i in $TICKER; do
+        input="$input*$(echo "$INPUT" | awk -F ';' -v i="$i" '$2==i')"
+    done
+fi
+
+if [ -n "$input" ]; then
+    input="${input//'*'/$'\n'}"
+    if [ -z "$FUNC" ]; then
+        for i in "$input"; do
+            echo "$i" | awk -F ';' '$1!="" {print $0}' | sort -n
+        done
+    else
+        for i in "$input"; do
+            variable=$(echo "$i" | awk -F ';' '$1!="" {print $0}' | sort -n)
+            $FUNC
+        done
+    fi
+fi
+# sum values in final { reference profit }
+if [ -n "$final" ]; then
+    echo $final | sed 's/ /+/g' | bc
+fi
